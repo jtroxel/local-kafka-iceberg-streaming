@@ -27,33 +27,13 @@ services:
       - --advertise-kafka-addr
       - PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
       - --check=false
-  owl-shop:
-    image: quay.io/cloudhut/owl-shop:sha-042112b
-#    networks:
-#      - redpanda_network
-    platform: 'linux/amd64'
-    entrypoint: /bin/sh
-    command: -c "echo \"$$OWLSHOP_CONFIG_FILE\" > /tmp/config.yml; /app/owlshop"
-    environment:
-      CONFIG_FILEPATH: /tmp/config.yml
-      OWLSHOP_CONFIG_FILE: |
-        shop:
-          requestRate: 1
-          interval: 0.1s
-          topicReplicationFactor: 1
-          topicPartitionCount: 1
-        kafka:
-          brokers: "redpanda:29092"
-    depends_on:
-      - redpanda
 
-  kafka_connect:
+  connect:
     image: confluentinc/cp-kafka-connect-base:7.3.0
     depends_on:
       - redpanda
-      - rest
     hostname: connect
-    container_name: kafka_connect
+    container_name: connect
     ports:
       - 8083:8083
     environment:
@@ -100,26 +80,7 @@ services:
           fi
           sleep 5 
         done
-        echo -e "\n--\n+> Creating Datagen connector"
-        curl -X PUT \
-        -H 'Content-Type: application/json' \
-        -H 'Accept: application/json' http://localhost:8083/connectors/MskDatagenConnector/config \
-        -d '{
-          "connector.class": "com.amazonaws.mskdatagen.GeneratorSourceConnector",
-          "genv.customer.state.with": "#{Address.state}",
-          "tasks.max": "2",
-          "genv.order.customer_id.matching": "customer.key",
-          "genv.customer.favorite_beer.with": "#{Beer.name}",
-          "global.history.records.max": "1000",
-          "genkp.customer.with": "#{Code.isbn10}",
-          "genv.customer.gender.with": "#{Demographic.sex}",
-          "genv.order.product_id.with": "#{number.number_between '101','109'}",
-          "genv.order.quantity.with": "#{number.number_between '1','5'}",
-          "global.throttle.ms": "2000",
-          "genv.customer.name.with": "#{Name.full_name}",
-          "genkp.order.with": "#{Code.isbn10}",
-        }'
-        echo -e "\n--\n+> Creating Iceberg connector"
+        echo -e "\n--\n+> Creating connector"
         curl -X PUT \
         -H 'Content-Type: application/json' \
         -H 'Accept: application/json' http://localhost:8083/connectors/IcebergSinkConnector/config \
@@ -130,12 +91,10 @@ services:
           "iceberg.catalog.s3.endpoint": "http://minio:9000",
           "iceberg.catalog.s3.secret-access-key": "minioadmin",
           "iceberg.catalog.s3.access-key-id": "minioadmin",
-          //"iceberg.catalog.uri": "http://rest:8181",
+          "iceberg.catalog.uri": "http://rest:8181",
           "iceberg.catalog.warehouse": "s3://warehouse/",
           "iceberg.catalog.client.region": "eu-west-1",
-          "iceberg.catalog.catalog-impl": "org.apache.iceberg.aws.glue.GlueCatalog",
-          "iceberg.catalog.io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
-          // "iceberg.catalog.type": "rest",
+          "iceberg.catalog.type": "rest",
           "iceberg.control.commitIntervalMs": "1000",
           "iceberg.tables": "orders.payments",
           "value.converter.schemas.enable": "false",
@@ -170,7 +129,7 @@ services:
       - 18080:8080
     depends_on:
       - redpanda
-      - kafka_connect
+      - connect
 
   minio:
     image: minio/minio
@@ -238,6 +197,20 @@ services:
       - ./notebooks:/home/iceberg/notebooks/notebooks
     command: ["echo \"$$SPARK_DEFAULTS\" > /opt/spark/conf/spark-defaults.conf && spark-submit /home/iceberg/scripts/create_table.py && notebook"]
 
+  aws-glue:
+    image: amazon/aws-glue-libs:glue_libs_1.0.0_image_01
+    container_name: 'aws-glue'
+    ports:
+      - 8888:8888
+      - 4040:4040
+    entrypoint: sh
+    command: -c "
+      /home/jupyter/jupyter_start.sh
+      "
+    volumes:
+      - /home/bibagimon/.aws:/root/.aws:ro
+      - ./docker/jupyter/notebooks:/home/jupyter/jupyter_default_dir
+
   rest:
     image: tabulario/iceberg-rest
     hostname: rest
@@ -252,5 +225,3 @@ services:
       - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
       - CATALOG_S3_ENDPOINT=http://minio:9000
       - CATALOG_S3_PATH__STYLE__ACCESS=True
-    depends_on:
-      - minio
